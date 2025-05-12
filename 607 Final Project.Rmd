@@ -1,0 +1,180 @@
+---
+title: "DATA607 Final Project"
+author: "Jane Song"
+date: "2025-05-4"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction 
+
+For my final project, the question I would like to answer if a small number of high-cost drugs account for a disproportionately large share of total Medicare drug spending. I will use several different methods to try to reach the answer to this question. 
+
+
+## Load packages
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(stringr)
+library(tidyr)
+
+```
+
+## Import dataframe 
+
+```{r}
+df <- "https://raw.githubusercontent.com/j-song-npc/Data607-Final-Project-/refs/heads/main/Medicare_Part_D_Spending_by_Drug_2022.csv" 
+medicare <- read.csv(df)
+```
+
+## Clean and filter data
+The observations are broken out by manufacturer but I think it will be easier to look at the overall drug instead of broken out for this analysis. 
+
+```{r}
+# Filter and reorder dataset
+medicare_overall <- medicare %>%
+  filter(Mftr_Name == "Overall") %>%
+  arrange(desc(Tot_Spndng_2022))
+
+# Long table for years 
+medicare_long <- medicare_overall %>%
+  pivot_longer(cols = starts_with("Tot_Spndng_"), 
+               names_to = "year", 
+               values_to = "total_spending") %>%
+  mutate(year = gsub("Tot_Spndng_", "", year),
+         year = as.integer(year)) 
+  
+```
+
+
+## Summary stats and ratios 
+
+```{r}
+medicare_overall$cum_spnd_2022 <- cumsum(medicare_overall$Tot_Spndng_2022)
+Total_Spend <- sum(medicare_overall$Tot_Spndng_2022, na.rm =TRUE)
+Total_Benes <- sum(medicare_overall$Tot_Benes_2022, na.rm = TRUE)
+
+medicare_overall$ratio_total_spending <- (medicare_overall$cum_spnd_2022/Total_Spend) * 100 
+medicare_overall$ratio_drugs <- (1:nrow(medicare_overall) / nrow(medicare_overall)) *100
+medicare_overall$ratio_benes <- (medicare_overall$Tot_Benes_2022/Total_Benes)* 100 
+
+```
+
+
+## Spending concentration
+```{r}
+drugs80 <- min(which(medicare_overall$ratio_total_spending >= 80))
+percent_drugs80 <- (drugs80 / nrow(medicare_overall)) * 100
+
+head(percent_drugs80)
+```
+This tells us that 7.3% of drugs account for 80% of total spending. However, some drugs may have higher utilization though lower cost, while other drugs are higher cost with lower utilization.
+
+## Visualize spending
+```{r}
+# Arrange data by descending spending
+medicare_overall_sorted <- medicare_overall %>%
+  arrange(desc(Tot_Spndng_2022)) %>%
+  mutate(
+    drug_rank = row_number(),
+    pct_drugs = drug_rank / n(),
+    pct_spending = cumsum(Tot_Spndng_2022) / sum(Tot_Spndng_2022))
+
+# Plot cumulative spending curve
+ggplot(medicare_overall_sorted, aes(x = pct_drugs, y = pct_spending)) +
+  geom_line() +
+  geom_vline(xintercept = 0.073, linetype = "dashed") +
+  geom_hline(yintercept = 0.8, linetype = "dashed") +
+  labs(
+    title = "Cumulative Drug Spending Distribution",
+    subtitle = "7.3% of drugs account for 80% of Medicare drug spending",
+    x = "Cumulative % of Drugs",
+    y = "Cumulative % of Total Spending")
+```
+
+
+## Top 10% high-spend drugs 
+0.17% of medicare beneficiaries are using the top 10% costliest drugs.
+```{r}
+# Top 10% by total spending 
+top10_count <- ceiling(0.1 * nrow(medicare_overall))
+top10_spending <- sum(medicare_overall$Tot_Spndng_2022[1:top10_count])
+top10_benes <- sum(medicare_overall$Tot_Benes_2022[1:top10_count])
+percent_spending_top10 <- ((top10_spending / Total_Spend) * 100)
+percent_benes_top10 <- (top10_benes / Total_Benes) * 100
+
+head(top10_count)
+head(top10_spending)
+head(top10_benes)
+head(percent_spending_top10)
+head(percent_benes_top10)
+
+# Top 10% by average spending per beneficiary 
+top10_threshold <- quantile(medicare_overall$Avg_Spnd_Per_Bene_2022, 0.9, na.rm = TRUE)
+high_cost_drugs <- medicare_overall %>%
+  filter(Avg_Spnd_Per_Bene_2022 >= top10_threshold)
+
+top10_total_benes <- sum(high_cost_drugs$Tot_Benes_2022, na.rm = TRUE)
+percent_benes_top10_avgcost <- (top10_total_benes / Total_Benes) * 100
+
+head(percent_benes_top10_avgcost)
+```
+
+## Utilization categories
+```{r}
+# Set thresholds to categorize each drug
+high_cost <- quantile(medicare_overall$Avg_Spnd_Per_Bene_2022, 0.9, na.rm = TRUE)
+low_cost <- quantile(medicare_overall$Avg_Spnd_Per_Bene_2022, 0.1, na.rm = TRUE)
+high_util <- quantile(medicare_overall$Tot_Benes_2022, 0.9, na.rm = TRUE)
+low_util <- quantile(medicare_overall$Tot_Benes_2022, 0.1, na.rm = TRUE)
+
+# Categorize drugs
+medicare_overall <- medicare_overall %>%
+  mutate(
+    cost_category = case_when(
+      Avg_Spnd_Per_Bene_2022 >= high_cost ~ "High Cost",
+      Avg_Spnd_Per_Bene_2022 <= low_cost ~ "Low Cost",
+      TRUE ~ "Medium Cost"),
+    util_category = case_when(
+      Tot_Benes_2022 >= high_util ~ "High Util",
+      Tot_Benes_2022 <= low_util ~ "Low Util",
+      TRUE ~ "Medium Util"),
+    cost_util_group = paste(cost_category, util_category, sep = " / "))
+
+# Count drugs in each category
+group_counts <- medicare_overall %>%
+  count(cost_util_group) %>%
+  arrange(desc(n))
+
+print(group_counts)
+
+```
+
+# Plot of utilization categories
+```{r}
+
+ggplot(medicare_overall, aes(x = Tot_Benes_2022, y = Avg_Spnd_Per_Bene_2022, color = cost_util_group)) +
+  geom_point(alpha = 0.7) +
+  scale_y_log10() + 
+  scale_x_log10() +
+  labs(
+    title = "Drug Cost vs. Utilization",
+    x = "Number of Beneficiaries (log scale)",
+    y = "Average Spending per Beneficiary (log scale)",
+    color = "Category"
+  ) +
+  theme_minimal()
+
+```
+
+
+## Conclusion
+
+This analysis revealed that a small number of drugs account for the majority of Medicare drug spending, a finding I explored using several statistical techniques in R that were new to me. The project not only reinforced my assumptions about spending concentration but also expanded my ability to manipulate and visualize data. 
+
+One limitation is that the dataset does not account for patients taking multiple medications, which could affect interpretations of utilization. For future analysis, it may be valuable to incorporate information on drug classifications or disease categories to better understand the types of drugs driving spending. I would also be interested in analyzing trends over time using the 2018–2022 data and further exploring the components of prescription claim costs.
+
